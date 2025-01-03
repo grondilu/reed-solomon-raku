@@ -3,20 +3,20 @@ unit module ReedSolomon;
 # inspired by L<Veritasium's take on the subject|https://www.youtube.com/watch?v=w5ebcowAJD8>
 
 constant MODULUS = 101;
-multi infix:<m==> (UInt $a, UInt $b) { $a % MODULUS == $b % MODULUS }
-multi infix:<m+> (UInt $a, UInt $b) { $a+$b mod MODULUS }
-multi infix:<m*> (UInt $a, UInt $b) { $a*$b mod MODULUS }
-multi infix:<m/> (UInt $a, UInt $b) { $a m* expmod $b, MODULUS - 2, MODULUS }
-multi infix:<m-> (UInt $a, UInt $b) { ($a-$b) mod MODULUS }
-multi prefix:<m+>(UInt $x) { +$x mod MODULUS }
-multi prefix:<m->(UInt $x) { -$x mod MODULUS }
+multi infix:<==> (UInt $a, UInt $b) { callwith $a % MODULUS, $b % MODULUS }
+multi infix:<+>  (UInt $ , UInt $ ) { callsame() mod MODULUS }
+multi infix:<*>  (UInt $ , UInt $ ) { callsame() mod MODULUS }
+multi infix:</>  (UInt $a, UInt $b) { $a * expmod $b, MODULUS - 2, MODULUS }
+multi infix:<->  (UInt $ , UInt $ ) { callsame() mod MODULUS }
+multi prefix:<+>(UInt $) { callsame() mod MODULUS }
+multi prefix:<->(UInt $) { callsame() mod MODULUS }
 
 # https://rosettacode.org/wiki/Polynomial_long_division#Raku
 sub poly-long-div ( @n is copy, @d ) {
   return [0], |@n if +@n < +@d;
 
   my @q = gather while +@n >= +@d {
-    @n = @n Z[m-] flat ( ( @d X[m*] take ( @n[0] m/ @d[0] ) ), 0 xx * );
+    @n = @n Z[-] flat ( ( @d X[*] take ( @n[0] / @d[0] ) ), 0 xx * );
     @n.shift;
   }
 
@@ -27,48 +27,50 @@ class Polynomial {
   has UInt @.coefficients;
   has $.coeff-zero = 0;
   has $.coeff-one = 1;
-  method stripped-coefficients {
+  method list {
     @!coefficients.map(* % MODULUS)
     .reverse
     .toggle(:off, * > 0)
     .reverse
   }
-  method degree returns UInt { @!coefficients.elems }
-  method CALL-ME(UInt $x) { @!coefficients.reverse.reduce: * m* $x m+ * }
+  method size returns UInt { @!coefficients.elems  }
+  method CALL-ME(UInt $x) { self.list.reverse.reduce: * * $x + * }
   method AT-POS(UInt $n) { @!coefficients[$n] // 0 }
 }
 
 multi infix:<+>(Polynomial $a, Polynomial $b --> Polynomial) {
-  Polynomial.new: coefficients => ($a[$_] m+ $b[$_] for ^max(($a,$b)».degree))
+  Polynomial.new: coefficients => ($a[$_] + $b[$_] for ^max(($a,$b)».size))
 }
 multi infix:<->(Polynomial $a, Polynomial $b --> Polynomial) {
-  Polynomial.new: coefficients => ($a[$_] m- $b[$_] for ^max(($a,$b)».degree))
+  Polynomial.new: coefficients => ($a[$_] - $b[$_] for ^max(($a,$b)».size))
 }
 multi infix:<*>(Polynomial $a, Polynomial $b --> Polynomial) {
-  my @coefficients = 0 xx [+] ($a,$b)».degree;
-  for ^$a.coefficients -> $i { for ^$b.coefficients -> $j {
-    @coefficients[$i+$j] [m+]= $a[$i] m* $b[$j]
-  }
-  }
+  my @coefficients = 0 xx [+] ($a,$b)».size;
+  for ^$a.coefficients -> $i { for ^$b.coefficients -> $j { @coefficients[$i+$j] [+]= $a[$i] * $b[$j] } }
   Polynomial.new: :@coefficients;
 }
 multi infix:<divmod>(Polynomial $a, Polynomial $b) {
-  poly-long-div($a.stripped-coefficients.reverse, $b.stripped-coefficients.reverse)
+  poly-long-div($a.list.reverse, $b.list.reverse)
     .map: { Polynomial.new: coefficients => .reverse }
 }
 
 
-constant NUMBER-OF-SYNDROMES = 2;
+constant DEFAULT-NUMBER-OF-SYNDROMES = 2;
+constant @SYNDROME-LOCATIONS = 1, |[\*] 2 xx *;
 
-sub encode(@coefficients) is export {
-  my Polynomial $P .=new: coefficients => (0 xx NUMBER-OF-SYNDROMES, @coefficients).flat;
+our sub encode(Blob $coefficients, UInt :$number-of-syndromes where 1..MODULUS = DEFAULT-NUMBER-OF-SYNDROMES) {
+  my Polynomial $P .=new: coefficients => (0 xx $number-of-syndromes, $coefficients.list).flat;
 
-  my ($q, $r) = $P divmod my $d = [*] ^NUMBER-OF-SYNDROMES .map: { Polynomial.new: coefficients => (m-($_+1), 1) }
+  my ($q, $r) = $P divmod my $d = [*] @SYNDROME-LOCATIONS.head($number-of-syndromes).map: { Polynomial.new: coefficients => (-$_, 1) }
 
-  die "unexpected result" unless ($P - $q*$d - $r).stripped-coefficients == 0;
+  fail "long division failed" unless ($P - $q*$d - $r).list == 0;
 
-  $P - $r
+  ($P - $r).list.rotor(2, *);
+}
 
+our sub check((@a, @b)) {
+  my Polynomial $P .=new: coefficients => (@a, @b).flat;
+  fail "check failed" unless @SYNDROME-LOCATIONS.head(@a.elems).map({$P($_)}).all == 0;
 }
 
 # vi: shiftwidth=2 nu
